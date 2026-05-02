@@ -16,7 +16,7 @@ if hasattr(st, "secrets"):
     for key, val in st.secrets.items():
         os.environ[key] = val
 
-st.set_page_config(page_title="BrightSmile Support", page_icon="🦷")
+st.set_page_config(page_title="BrightSmile Support", page_icon="🦷", layout="centered")
 
 st.markdown("""
 <style>
@@ -29,55 +29,58 @@ st.markdown("""
     background: #2f2f2f; border-radius: 18px 18px 4px 18px;
     padding: 10px 16px; display: inline-block; max-width: 80%; float: right;
 }
-[data-testid="stBottom"] { background: #212121 !important; border-top: 1px solid #2f2f2f !important; padding: 8px 0 !important; }
-[data-testid="stChatInput"] textarea { background: #2f2f2f !important; border: 1px solid #3f3f3f !important; border-radius: 12px !important; color: #ececec !important; font-size: 15px !important; }
+[data-testid="stBottom"] {
+    background: #212121 !important;
+    border-top: 1px solid #2f2f2f !important;
+    padding: 8px 0 !important;
+}
+[data-testid="stChatInput"] textarea {
+    background: #2f2f2f !important; border: 1px solid #3f3f3f !important;
+    border-radius: 12px !important; color: #ececec !important; font-size: 15px !important;
+    padding-left: 52px !important;   /* room for mic icon on left  */
+    padding-right: 52px !important;  /* room for speaker icon on right */
+}
 [data-testid="stChatInput"] textarea:focus { border-color: #555 !important; box-shadow: none !important; }
 .stSpinner > div { border-top-color: #19c37d !important; }
 hr { border-color: #2f2f2f !important; margin: 4px 0 !important; }
 h1 { color: #ececec !important; font-size: 20px !important; margin-bottom: 0 !important; }
 .stCaption { color: #8e8ea0 !important; }
 
-/* ── Mic & Speaker buttons: fixed bottom-left and bottom-right of chat bar ── */
-[data-testid="stAudioInput"] {
-    position: fixed !important;
-    bottom: 13px !important;
-    left: max(1rem, calc(50% - 380px + 4px)) !important;
-    z-index: 9999 !important;
-    width: 40px !important;
-    margin: 0 !important; padding: 0 !important;
-}
+/* ── Hide the big audio-input recorder UI, show only the mic icon ── */
+[data-testid="stAudioInput"] > div > div:last-child { display: none !important; }
 [data-testid="stAudioInput"] > div {
-    background: #2f2f2f !important;
-    border: 1px solid #3f3f3f !important;
-    border-radius: 50% !important;
-    padding: 0 !important;
-    width: 40px !important; height: 40px !important;
-    display: flex !important; align-items: center !important; justify-content: center !important;
+    border: none !important; background: transparent !important;
+    padding: 0 !important; margin: 0 !important;
 }
-/* Hide the waveform label/text, keep only the icon */
-[data-testid="stAudioInput"] label,
-[data-testid="stAudioInput"] span { display: none !important; }
+[data-testid="stAudioInput"] > div > div:first-child button {
+    background: #2f2f2f !important; border: 1px solid #3f3f3f !important;
+    border-radius: 50% !important; width: 38px !important; height: 38px !important;
+    color: #ececec !important; font-size: 16px !important;
+}
+[data-testid="stAudioInput"] > div > div:first-child button:hover {
+    background: #3f3f3f !important;
+}
+[data-testid="stAudioInput"] label { display: none !important; }
 
-/* Speaker button fixed bottom-right */
-[data-testid="stBottom"] ~ div .stButton,
-.speaker-btn-wrap {
-    position: fixed !important;
-    bottom: 13px !important;
-    right: max(1rem, calc(50% - 380px + 4px)) !important;
-    z-index: 9999 !important;
-    width: 40px !important;
-}
+/* ── Speaker button styling ── */
 .stButton > button {
-    background: #2f2f2f !important;
-    border: 1px solid #3f3f3f !important;
-    color: #ececec !important;
-    border-radius: 50% !important;
-    width: 40px !important; height: 40px !important;
-    padding: 0 !important;
-    font-size: 18px !important;
+    background: #2f2f2f !important; border: 1px solid #3f3f3f !important;
+    color: #ececec !important; border-radius: 50% !important;
+    width: 38px !important; height: 38px !important;
+    padding: 0 !important; font-size: 16px !important;
     display: flex !important; align-items: center !important; justify-content: center !important;
 }
 .stButton > button:hover { background: #3f3f3f !important; border-color: #555 !important; }
+
+/* ── Keep the bottom columns tight and vertically centered ── */
+[data-testid="stBottom"] [data-testid="stHorizontalBlock"] {
+    align-items: center !important;
+    gap: 6px !important;
+}
+[data-testid="stBottom"] [data-testid="stColumn"] {
+    padding: 0 !important;
+    min-width: 0 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -244,15 +247,20 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"], avatar="👤" if msg["role"] == "user" else "🦷"):
         st.markdown(msg["content"])
 
-# ---------------- FIXED BOTTOM INPUTS ----------------
-# chat_input at top level → stays pinned to bottom bar (never moves)
-user_input = st.chat_input("Ask me anything...")
+# ---------------- BOTTOM BAR: mic | chat input | speaker ----------------
+# Streamlit automatically moves everything after this point into stBottom.
+# Columns here render INSIDE the fixed bottom bar — they don't push content up.
+col_mic, col_input, col_speaker = st.columns([1, 10, 1])
 
-# Mic — rendered via st.audio_input, CSS positions it fixed bottom-left of chat bar
-audio = st.audio_input(" ", label_visibility="collapsed", key=f"mic_{st.session_state.mic_key}")
+with col_mic:
+    audio = st.audio_input(" ", label_visibility="collapsed",
+                           key=f"mic_{st.session_state.mic_key}")
+with col_input:
+    user_input = st.chat_input("Ask me anything...")
 
-# Speaker — CSS positions it fixed bottom-right of chat bar
-speak_clicked = st.button("🔊", key=f"speaker_{st.session_state.speaker_key}", help="Read last reply aloud")
+with col_speaker:
+    speak_clicked = st.button("🔊", key=f"speaker_{st.session_state.speaker_key}",
+                              help="Read last reply aloud")
 
 # ---------------- SPEAKER ----------------
 if speak_clicked:
