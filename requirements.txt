@@ -20,4 +20,4 @@ streamlit
  gtts 
  pygame
 
-streamlit-mic-recorder
+streamlit_mic_recorder
