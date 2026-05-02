@@ -18,6 +18,27 @@ if hasattr(st, "secrets"):
 
 st.set_page_config(page_title="BrightSmile Support", page_icon="🦷")
 
+# ── CSS: pin the mic button fixed beside the chat input, hide waveform UI ──
+st.markdown("""
+<style>
+/* Shrink the iframe to button-only height, no waveform */
+[data-testid="stCustomComponentV1"] iframe {
+    height: 46px !important;
+    min-height: 46px !important;
+    border: none !important;
+    background: transparent !important;
+}
+/* Fix mic component to bottom-right, just left of the send button */
+div[data-testid="stVerticalBlock"]:has(> div > [data-testid="stCustomComponentV1"]) {
+    position: fixed !important;
+    bottom: 14px !important;
+    right: 70px !important;
+    z-index: 9999 !important;
+    width: 46px !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🦷 BrightSmile Dental Support")
 st.caption("Book appointments · Get info · 24/7 support")
 st.divider()
@@ -177,39 +198,34 @@ if "messages" not in st.session_state:
 if "last_audio_id" not in st.session_state:
     st.session_state.last_audio_id = None
 
-if "mic_key" not in st.session_state:
-    st.session_state.mic_key = 0
-
 # ---------------- CHAT UI ----------------
 for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ---------------- STANDARD PINNED CHAT INPUT ----------------
+# ---------------- INPUTS ----------------
+# Standard pinned chat input (stays fixed at bottom, never moves)
 user_input = st.chat_input("Ask me anything...")
 
-# ---------------- MIC TOGGLE BUTTON (above chat input) ----------------
-if "show_mic" not in st.session_state:
-    st.session_state.show_mic = False
-
-if st.button("🎙️", help="Record voice message", key="mic_toggle"):
-    st.session_state.show_mic = not st.session_state.show_mic
-
-# Hide the audio_input widget visually when not toggled; always render to avoid key errors
-audio = None
-if st.session_state.show_mic:
-    audio = st.audio_input(" ", label_visibility="collapsed", key=f"mic_{st.session_state.mic_key}")
+# Compact mic button — fixed beside chat input via CSS above
+# Returns dict with 'bytes' key when a recording is ready, else None
+from streamlit_mic_recorder import mic_recorder
+recording = mic_recorder(
+    start_prompt="🎙️",
+    stop_prompt="⏹️",
+    just_once=True,
+    use_container_width=False,
+    key="mic_recorder",
+)
 
 # ---------------- HANDLE MIC ----------------
-if audio:
-    audio_id = hash(audio.read())
-    audio.seek(0)
+if recording and recording.get("bytes"):
+    audio_bytes = recording["bytes"]
+    audio_id = hash(audio_bytes)
     if audio_id != st.session_state.last_audio_id:
         st.session_state.last_audio_id = audio_id
         with st.spinner("Transcribing..."):
-            transcribed = speech_to_text(audio.read())
-        st.session_state.mic_key += 1
-        st.session_state.show_mic = False       # hide mic after recording
+            transcribed = speech_to_text(audio_bytes)
         if transcribed and not transcribed.startswith("❌"):
             user_input = transcribed
         else:
