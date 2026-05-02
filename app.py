@@ -4,70 +4,46 @@ Run: streamlit run app.py
 """
 
 import streamlit as st
-import json, re, os, tempfile, base64
+import re, os, tempfile, base64
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from gtts import gTTS
 
-# ✅ Load env (local) + Streamlit secrets (cloud)
+# ---------------- ENV + SECRETS ----------------
 load_dotenv()
 
 if hasattr(st, "secrets"):
     for key, val in st.secrets.items():
         os.environ[key] = val
 
-st.set_page_config(page_title="BrightSmile Support", page_icon="🦷", layout="centered")
+st.set_page_config(page_title="BrightSmile Support", page_icon="🦷")
 
-# ---------------- UI ----------------
 st.title("🦷 BrightSmile Dental Support")
 st.caption("Book appointments · Get info · 24/7 support")
 st.divider()
 
-# ---------------- Speech to Text ----------------
-def speech_to_text(audio_bytes) -> str:
-    try:
-        from groq import Groq
-        client = Groq(api_key=os.getenv("llm_api"))
-
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(audio_bytes)
-            tmp_path = f.name
-
-        with open(tmp_path, "rb") as f:
-            transcription = client.audio.transcriptions.create(
-                file=f,
-                model="whisper-large-v3"
-            )
-
-        os.unlink(tmp_path)
-        return transcription.text.strip()
-
-    except Exception as e:
-        return f"❌ Transcription error: {str(e)}"
-
-# ---------------- Text to Speech ----------------
+# ---------------- TEXT TO SPEECH ----------------
 def text_to_speech(text: str) -> str:
     try:
         clean = re.sub(r"[#*_`]", "", text)
-        clean = re.sub(r"http\S+", "link", clean)
         clean = clean[:500]
 
-        tts = gTTS(text=clean, lang="en", slow=False)
+        tts = gTTS(text=clean, lang="en")
 
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             tts.save(f.name)
-            tmp_path = f.name
+            tmp = f.name
 
-        with open(tmp_path, "rb") as f:
-            audio_b64 = base64.b64encode(f.read()).decode()
+        with open(tmp, "rb") as f:
+            audio = base64.b64encode(f.read()).decode()
 
-        os.unlink(tmp_path)
-        return audio_b64
+        os.unlink(tmp)
+        return audio
 
-    except Exception:
+    except:
         return ""
 
-# ---------------- Load Agent ----------------
+# ---------------- LOAD AGENT ----------------
 @st.cache_resource
 def load_agent():
     from langchain_community.document_loaders import PyPDFLoader
@@ -76,13 +52,13 @@ def load_agent():
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_core.tools import create_retriever_tool, StructuredTool
     from langchain.chat_models import init_chat_model
-    from langgraph.graph import END, StateGraph, START
+    from langgraph.graph import StateGraph, START
     from langgraph.prebuilt import ToolNode, tools_condition
     from typing import Annotated, Sequence, Optional
     from typing_extensions import TypedDict
     from langchain_core.messages import BaseMessage
     from langgraph.graph.message import add_messages
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel
 
     # ---- Load PDF ----
     loader = PyPDFLoader("BrightSmile_Dental_Hospital.pdf")
@@ -102,14 +78,14 @@ def load_agent():
         "Search hospital info"
     )
 
-    # ---- Calendar tools ----
+    # ---- Calendar functions ----
     from calendar_mcp_server import handle_book, handle_cancel, handle_availability
 
     class BookInput(BaseModel):
         patient_name: str
         date: str
         time: str
-        treatment: str = "Dental Appointment"
+        treatment: Optional[str] = "Dental Appointment"
         patient_email: Optional[str] = ""
 
     class CancelInput(BaseModel):
@@ -119,19 +95,40 @@ def load_agent():
         date: str
 
     def book_fn(**kwargs):
+        """Book a dental appointment in Google Calendar."""
         return handle_book(kwargs)
 
     def cancel_fn(event_id: str):
+        """Cancel an appointment using event ID."""
         return handle_cancel({"event_id": event_id})
 
     def availability_fn(date: str):
+        """Check booked slots for a given date."""
         return handle_availability({"date": date})
 
     tools = [
         retriever_tool,
-        StructuredTool.from_function(book_fn, "book_appointment", args_schema=BookInput),
-        StructuredTool.from_function(cancel_fn, "cancel_appointment", args_schema=CancelInput),
-        StructuredTool.from_function(availability_fn, "check_availability", args_schema=AvailabilityInput),
+
+        StructuredTool.from_function(
+            func=book_fn,
+            name="book_appointment",
+            description="Book a dental appointment at BrightSmile Dental Hospital",
+            args_schema=BookInput
+        ),
+
+        StructuredTool.from_function(
+            func=cancel_fn,
+            name="cancel_appointment",
+            description="Cancel an appointment using event ID",
+            args_schema=CancelInput
+        ),
+
+        StructuredTool.from_function(
+            func=availability_fn,
+            name="check_availability",
+            description="Check appointment slots for a given date",
+            args_schema=AvailabilityInput
+        ),
     ]
 
     # ---- LLM ----
@@ -157,50 +154,49 @@ def load_agent():
 
     return graph.compile()
 
-# ---------------- Session State ----------------
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+# ---------------- SESSION ----------------
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-if "agent_messages" not in st.session_state:
-    st.session_state.agent_messages = []
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-# ---------------- Chat UI ----------------
-for msg in st.session_state.chat_history:
+# ---------------- CHAT UI ----------------
+for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
 user_input = st.chat_input("Ask me anything...")
 
-# ---------------- Main Logic ----------------
+# ---------------- MAIN ----------------
 if user_input:
-    st.session_state.chat_history.append({"role": "user", "content": user_input})
+    st.session_state.history.append({"role": "user", "content": user_input})
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
                 graph = load_agent()
 
-                st.session_state.agent_messages.append(HumanMessage(content=user_input))
-
-                result = graph.invoke({"messages": st.session_state.agent_messages})
+                st.session_state.messages.append(HumanMessage(content=user_input))
+                result = graph.invoke({"messages": st.session_state.messages})
 
                 response = result["messages"][-1].content
                 response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
 
-                st.session_state.agent_messages = list(result["messages"])
+                st.session_state.messages = list(result["messages"])
 
             except Exception as e:
                 response = f"⚠️ Error: {str(e)}"
 
         st.markdown(response)
 
-    st.session_state.chat_history.append({"role": "assistant", "content": response})
+    st.session_state.history.append({"role": "assistant", "content": response})
 
-    # ---- Audio output ----
-    audio_b64 = text_to_speech(response)
-    if audio_b64:
+    # ---- Audio ----
+    audio = text_to_speech(response)
+    if audio:
         st.markdown(
-            f'<audio autoplay><source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3"></audio>',
+            f'<audio autoplay><source src="data:audio/mp3;base64,{audio}" type="audio/mp3"></audio>',
             unsafe_allow_html=True
         )
 
