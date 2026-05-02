@@ -9,69 +9,65 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from gtts import gTTS
 
+# ✅ Load env (local) + Streamlit secrets (cloud)
 load_dotenv()
+
+if hasattr(st, "secrets"):
+    for key, val in st.secrets.items():
+        os.environ[key] = val
 
 st.set_page_config(page_title="BrightSmile Support", page_icon="🦷", layout="centered")
 
-st.markdown("""
-<style>
-#MainMenu, footer, header { visibility: hidden; }
-.stApp { background: #212121; color: #ececec; }
-.block-container { padding: 1rem 1rem 0 1rem !important; max-width: 760px !important; }
-[data-testid="stChatMessage"] { background: transparent !important; border: none !important; padding: 8px 0 !important; }
-[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) { flex-direction: row-reverse !important; }
-[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) .stMarkdown p {
-    background: #2f2f2f; border-radius: 18px 18px 4px 18px;
-    padding: 10px 16px; display: inline-block; max-width: 80%; float: right;
-}
-[data-testid="stBottom"] { background: #212121 !important; border-top: 1px solid #2f2f2f !important; padding: 8px 0 !important; }
-[data-testid="stChatInput"] textarea { background: #2f2f2f !important; border: 1px solid #3f3f3f !important; border-radius: 12px !important; color: #ececec !important; font-size: 15px !important; }
-[data-testid="stChatInput"] textarea:focus { border-color: #555 !important; box-shadow: none !important; }
-[data-testid="stAudioInput"] { margin: 0 !important; padding: 0 !important; }
-[data-testid="stAudioInput"] > div { background: #2f2f2f !important; border: 1px solid #3f3f3f !important; border-radius: 12px !important; padding: 4px 8px !important; }
-.stButton > button { background: #2f2f2f !important; border: 1px solid #3f3f3f !important; color: #ececec !important; border-radius: 12px !important; padding: 6px 12px !important; font-size: 16px !important; width: 100% !important; }
-.stButton > button:hover { background: #3f3f3f !important; border-color: #555 !important; }
-.stSpinner > div { border-top-color: #19c37d !important; }
-hr { border-color: #2f2f2f !important; margin: 4px 0 !important; }
-h1 { color: #ececec !important; font-size: 20px !important; margin-bottom: 0 !important; }
-.stCaption { color: #8e8ea0 !important; }
-</style>
-""", unsafe_allow_html=True)
+# ---------------- UI ----------------
+st.title("🦷 BrightSmile Dental Support")
+st.caption("Book appointments · Get info · 24/7 support")
+st.divider()
 
-
+# ---------------- Speech to Text ----------------
 def speech_to_text(audio_bytes) -> str:
     try:
         from groq import Groq
         client = Groq(api_key=os.getenv("llm_api"))
+
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_bytes)
             tmp_path = f.name
+
         with open(tmp_path, "rb") as f:
-            transcription = client.audio.translations.create(model="whisper-large-v3", file=f)
+            transcription = client.audio.transcriptions.create(
+                file=f,
+                model="whisper-large-v3"
+            )
+
         os.unlink(tmp_path)
         return transcription.text.strip()
+
     except Exception as e:
         return f"❌ Transcription error: {str(e)}"
 
-
+# ---------------- Text to Speech ----------------
 def text_to_speech(text: str) -> str:
     try:
         clean = re.sub(r"[#*_`]", "", text)
         clean = re.sub(r"http\S+", "link", clean)
-        clean = re.sub(r"📌.*", "", clean)
         clean = clean[:500]
+
         tts = gTTS(text=clean, lang="en", slow=False)
+
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             tts.save(f.name)
             tmp_path = f.name
+
         with open(tmp_path, "rb") as f:
             audio_b64 = base64.b64encode(f.read()).decode()
+
         os.unlink(tmp_path)
         return audio_b64
-    except Exception as e:
+
+    except Exception:
         return ""
 
-
+# ---------------- Load Agent ----------------
 @st.cache_resource
 def load_agent():
     from langchain_community.document_loaders import PyPDFLoader
@@ -88,178 +84,124 @@ def load_agent():
     from langgraph.graph.message import add_messages
     from pydantic import BaseModel, Field
 
+    # ---- Load PDF ----
     loader = PyPDFLoader("BrightSmile_Dental_Hospital.pdf")
     docs = loader.load()
-    splits = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50).split_documents(docs)
+
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    splits = splitter.split_documents(docs)
+
     vectorstore = FAISS.from_documents(
-        splits, HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    )
-    retriever_tool = create_retriever_tool(
-        vectorstore.as_retriever(), "retriever_tool",
-        "Search BrightSmile hospital info — services, timings, fees, doctors"
+        splits,
+        HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     )
 
+    retriever_tool = create_retriever_tool(
+        vectorstore.as_retriever(),
+        "retriever_tool",
+        "Search hospital info"
+    )
+
+    # ---- Calendar tools ----
     from calendar_mcp_server import handle_book, handle_cancel, handle_availability
 
     class BookInput(BaseModel):
-        patient_name: str = Field(description="Full name of the patient")
-        date: str = Field(description="Appointment date in YYYY-MM-DD format")
-        time: str = Field(description="Appointment time in HH:MM 24-hour format")
-        treatment: str = Field(default="Dental Appointment", description="Type of dental treatment")
-        patient_email: Optional[str] = Field(default="", description="Patient email address")
+        patient_name: str
+        date: str
+        time: str
+        treatment: str = "Dental Appointment"
+        patient_email: Optional[str] = ""
 
     class CancelInput(BaseModel):
-        event_id: str = Field(description="Google Calendar Event ID to cancel")
+        event_id: str
 
     class AvailabilityInput(BaseModel):
-        date: str = Field(description="Date to check in YYYY-MM-DD format")
+        date: str
 
-    def book_fn(patient_name: str, date: str, time: str,
-                treatment: str = "Dental Appointment", patient_email: str = "") -> str:
-        try:
-            return handle_book({
-                "patient_name": patient_name,
-                "date": date,
-                "time": time,
-                "treatment": treatment,
-                "patient_email": patient_email,
-            })
-        except Exception as e:
-            return f"❌ Error: {e}"
+    def book_fn(**kwargs):
+        return handle_book(kwargs)
 
-    def cancel_fn(event_id: str) -> str:
-        try:
-            return handle_cancel({"event_id": event_id.strip()})
-        except Exception as e:
-            return f"❌ Error: {e}"
+    def cancel_fn(event_id: str):
+        return handle_cancel({"event_id": event_id})
 
-    def availability_fn(date: str) -> str:
-        try:
-            return handle_availability({"date": date.strip()})
-        except Exception as e:
-            return f"❌ Error: {e}"
+    def availability_fn(date: str):
+        return handle_availability({"date": date})
 
     tools = [
         retriever_tool,
-        StructuredTool.from_function(
-            func=book_fn,
-            name="book_appointment",
-            description="Book a dental appointment at BrightSmile Dental Hospital.",
-            args_schema=BookInput,
-        ),
-        StructuredTool.from_function(
-            func=cancel_fn,
-            name="cancel_appointment",
-            description="Cancel an existing appointment using its Google Calendar Event ID.",
-            args_schema=CancelInput,
-        ),
-        StructuredTool.from_function(
-            func=availability_fn,
-            name="check_availability",
-            description="Check which appointment slots are already booked on a given date.",
-            args_schema=AvailabilityInput,
-        ),
+        StructuredTool.from_function(book_fn, "book_appointment", args_schema=BookInput),
+        StructuredTool.from_function(cancel_fn, "cancel_appointment", args_schema=CancelInput),
+        StructuredTool.from_function(availability_fn, "check_availability", args_schema=AvailabilityInput),
     ]
 
-    # ── llama-3.3-70b-versatile fully supports structured tool schemas ──
-    llm = init_chat_model(model="groq:openai/gpt-oss-120b", api_key=os.getenv("llm_api"))
+    # ---- LLM ----
+    llm = init_chat_model(
+        model="groq:openai/gpt-oss-120b",
+        api_key=os.getenv("llm_api")
+    )
 
     class AgentState(TypedDict):
         messages: Annotated[Sequence[BaseMessage], add_messages]
 
     def assistant(state):
-        system = SystemMessage(content="""You are a receptionist for BrightSmile Dental Hospital.
-
-Tools available:
-- retriever_tool: look up hospital info (services, timings, fees, doctors)
-- book_appointment: fields — patient_name, date (YYYY-MM-DD), time (HH:MM), treatment, patient_email
-- cancel_appointment: field — event_id
-- check_availability: field — date (YYYY-MM-DD)
-
-Be warm, professional, and always give a clear final answer.""")
+        system = SystemMessage(content="You are a helpful dental receptionist.")
         response = llm.bind_tools(tools).invoke([system] + list(state["messages"]))
         return {"messages": [response]}
 
-    workflow = StateGraph(AgentState)
-    workflow.add_node("assistant", assistant)
-    workflow.add_node("tools", ToolNode(tools))
-    workflow.add_edge(START, "assistant")
-    workflow.add_conditional_edges("assistant", tools_condition)
-    workflow.add_edge("tools", "assistant")
-    return workflow.compile()
+    graph = StateGraph(AgentState)
+    graph.add_node("assistant", assistant)
+    graph.add_node("tools", ToolNode(tools))
+    graph.add_edge(START, "assistant")
+    graph.add_conditional_edges("assistant", tools_condition)
+    graph.add_edge("tools", "assistant")
 
+    return graph.compile()
 
-if "last_audio_id" not in st.session_state:
-    st.session_state.last_audio_id = None
+# ---------------- Session State ----------------
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+
 if "agent_messages" not in st.session_state:
     st.session_state.agent_messages = []
-if "mic_key" not in st.session_state:
-    st.session_state.mic_key = 0
-if "speaker_key" not in st.session_state:
-    st.session_state.speaker_key = 0
 
-st.title("🦷 BrightSmile Dental Support")
-st.caption("Book appointments · Get info · 24/7 support")
-st.divider()
-
+# ---------------- Chat UI ----------------
 for msg in st.session_state.chat_history:
-    with st.chat_message(msg["role"], avatar="👤" if msg["role"] == "user" else "🦷"):
+    with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-col_mic, col_input, col_speaker = st.columns([1, 10, 1])
+user_input = st.chat_input("Ask me anything...")
 
-with col_mic:
-    audio = st.audio_input(" ", label_visibility="collapsed", key=f"mic_{st.session_state.mic_key}")
-
-with col_speaker:
-    speak_clicked = st.button("🔊", key=f"speaker_{st.session_state.speaker_key}", help="Read last reply aloud")
-
-with col_input:
-    user_input = st.chat_input("Ask me anything...")
-
-if speak_clicked:
-    st.session_state.speaker_key += 1
-    last_agent = [m for m in st.session_state.chat_history if m["role"] == "assistant"]
-    if last_agent:
-        audio_b64 = text_to_speech(last_agent[-1]["content"])
-        if audio_b64:
-            st.markdown(
-                f'<audio autoplay><source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3"></audio>',
-                unsafe_allow_html=True
-            )
-
-if audio:
-    audio_id = hash(audio.read())
-    audio.seek(0)
-    if audio_id != st.session_state.get("last_audio_id"):
-        st.session_state.last_audio_id = audio_id
-        with st.spinner("Transcribing..."):
-            transcribed = speech_to_text(audio.read())
-        st.session_state.mic_key += 1
-        if transcribed and not transcribed.startswith("❌"):
-            user_input = transcribed
-        else:
-            st.warning(transcribed)
-
+# ---------------- Main Logic ----------------
 if user_input:
-    with st.chat_message("user", avatar="👤"):
-        st.markdown(user_input)
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-    with st.chat_message("assistant", avatar="🦷"):
+    with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
                 graph = load_agent()
+
                 st.session_state.agent_messages.append(HumanMessage(content=user_input))
+
                 result = graph.invoke({"messages": st.session_state.agent_messages})
+
                 response = result["messages"][-1].content
                 response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+
                 st.session_state.agent_messages = list(result["messages"])
+
             except Exception as e:
                 response = f"⚠️ Error: {str(e)}"
+
         st.markdown(response)
 
     st.session_state.chat_history.append({"role": "assistant", "content": response})
+
+    # ---- Audio output ----
+    audio_b64 = text_to_speech(response)
+    if audio_b64:
+        st.markdown(
+            f'<audio autoplay><source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3"></audio>',
+            unsafe_allow_html=True
+        )
+
     st.rerun()
