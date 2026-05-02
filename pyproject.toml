@@ -1,0 +1,25 @@
+[project]
+name = "codespaces-blank"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "faiss-cpu>=1.13.2",
+    "google-api-python-client>=2.194.0",
+    "google-auth>=2.49.1",
+    "google-auth-oauthlib>=1.0.0",
+    "gtts>=2.5.4",
+    "ipykernel>=7.2.0",
+    "langchain>=1.2.15",
+    "langchain-community>=0.4.1",
+    "langchain-groq>=1.1.2",
+    "langchain-huggingface>=1.2.1",
+    "mcp>=1.27.0",
+    "openai-whisper>=20250625",
+    "pygame>=2.6.1",
+    "pypdf>=6.9.2",
+    "python-dateutil>=2.9.0.post0",
+    "sentence-transformers>=5.3.0",
+    "streamlit>=1.56.0",
+]

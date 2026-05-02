@@ -1,0 +1,22 @@
+ipykernel
+langchain
+langchain-community
+faiss-cpu 
+pypdf 
+sentence-transformers
+langchain_huggingface
+#--------------------------For MCP server -----------------
+google-auth 
+google-api-python-client 
+python-dateutil
+MCP
+google-auth-oauthlib>=1.0.0
+
+langchain-groq
+
+
+streamlit
+#------------------voice over-------------
+ openai-whisper 
+ gtts 
+ pygame
