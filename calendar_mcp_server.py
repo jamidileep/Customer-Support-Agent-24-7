@@ -1,15 +1,8 @@
 """
-calendar_mcp_server.py
-
-MCP Server for BrightSmile Dental Hospital — Appointment Booking.
-Place this file in your project root (same level as support_Agent.ipynb).
-
-Run it as:   python calendar_mcp_server.py
+calendar_mcp_server.py — BrightSmile Dental Hospital
 """
 
-import asyncio
-import os
-import sys
+import asyncio, os, sys, json, re
 from datetime import datetime, timedelta
 
 from google.oauth2.credentials import Credentials
@@ -21,119 +14,86 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp import types
 
-# ── Config ────────────────────────────────────────────────────────────────────
-
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
-CREDENTIALS_FILE = "credentials.json"   # already exists in your project ✅
-TOKEN_FILE = "token.json"               # auto-created after first login
+CREDENTIALS_FILE = "credentials.json"
+TOKEN_FILE = "token.json"
 TIMEZONE = "Asia/Kolkata"
 CALENDAR_ID = "primary"
 
-# ── Google Calendar Auth ──────────────────────────────────────────────────────
-
+# ── Auth — reads GOOGLE_TOKEN env var (Streamlit Cloud) or falls back to token.json ──
 def get_calendar_service():
-    """Load credentials and return Google Calendar service."""
     creds = None
 
-    if os.path.exists(TOKEN_FILE):
+    token_env = os.getenv("GOOGLE_TOKEN")
+    if token_env:
+        # Running on Streamlit Cloud — load from secret
+        try:
+            creds = Credentials.from_authorized_user_info(json.loads(token_env), SCOPES)
+        except Exception as e:
+            return None, f"❌ Failed to load GOOGLE_TOKEN: {e}"
+    elif os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
 
-    # Refresh or re-authenticate if needed
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    if not creds:
+        return None, "❌ No credentials found. Set GOOGLE_TOKEN secret or provide token.json"
+
+    if creds.expired and creds.refresh_token:
+        try:
             creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
+            # Save refreshed token back if running locally
+            if not os.getenv("GOOGLE_TOKEN") and os.path.exists(TOKEN_FILE):
+                with open(TOKEN_FILE, "w") as f:
+                    f.write(creds.to_json())
+        except Exception as e:
+            return None, f"❌ Token refresh failed: {e}"
 
-    return build("calendar", "v3", credentials=creds)
+    return build("calendar", "v3", credentials=creds), None
 
 
-# ── MCP Server ────────────────────────────────────────────────────────────────
-
+# ── MCP Server ────────────────────────────────────────────────
 app = Server("brightsmile-calendar-server")
-
 
 @app.list_tools()
 async def list_tools() -> list[types.Tool]:
-    """Expose 3 tools to the AI agent."""
     return [
         types.Tool(
             name="book_appointment",
-            description=(
-                "Book a dental appointment at BrightSmile Dental Hospital. "
-                "Use this when the user wants to schedule, book, or fix an appointment."
-            ),
+            description="Book a dental appointment at BrightSmile Dental Hospital.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "patient_name": {
-                        "type": "string",
-                        "description": "Full name of the patient"
-                    },
-                    "date": {
-                        "type": "string",
-                        "description": "Appointment date in YYYY-MM-DD format"
-                    },
-                    "time": {
-                        "type": "string",
-                        "description": "Appointment time in HH:MM 24-hour format (e.g. 10:30)"
-                    },
-                    "treatment": {
-                        "type": "string",
-                        "description": "Type of dental treatment (e.g. cleaning, checkup, root canal)"
-                    },
-                    "duration_minutes": {
-                        "type": "integer",
-                        "description": "Duration in minutes. Default is 30.",
-                        "default": 30
-                    }
+                    "patient_name": {"type": "string"},
+                    "date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "time": {"type": "string", "description": "HH:MM 24hr"},
+                    "treatment": {"type": "string", "default": "Dental Appointment"},
+                    "duration_minutes": {"type": "integer", "default": 30},
+                    "patient_email": {"type": "string", "default": ""}
                 },
                 "required": ["patient_name", "date", "time"]
             }
         ),
         types.Tool(
             name="cancel_appointment",
-            description=(
-                "Cancel an existing appointment using the Event ID. "
-                "The Event ID is given to the patient when they booked."
-            ),
+            description="Cancel an appointment by Event ID.",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "event_id": {
-                        "type": "string",
-                        "description": "The Google Calendar Event ID to cancel"
-                    }
-                },
+                "properties": {"event_id": {"type": "string"}},
                 "required": ["event_id"]
             }
         ),
         types.Tool(
             name="check_availability",
-            description=(
-                "Check what appointment slots are already booked on a given date. "
-                "Use this when user asks 'are you free on X date' or 'what slots are available'."
-            ),
+            description="Check booked slots on a given date.",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "date": {
-                        "type": "string",
-                        "description": "Date to check in YYYY-MM-DD format"
-                    }
-                },
+                "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}},
                 "required": ["date"]
             }
         )
     ]
 
-
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-    """Route tool calls."""
     if name == "book_appointment":
         result = handle_book(arguments)
     elif name == "cancel_appointment":
@@ -142,47 +102,27 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         result = handle_availability(arguments)
     else:
         result = f"❌ Unknown tool: {name}"
-
     return [types.TextContent(type="text", text=result)]
 
 
-
-#-------------Email----------------------------------------------------------
+# ── Email ─────────────────────────────────────────────────────
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 def send_booking_email(patient_email, booking_details):
-    """LLM writes the email, we just send it."""
     try:
         from langchain.chat_models import init_chat_model
-        from dotenv import load_dotenv
-        load_dotenv()
-
-        llm = init_chat_model(
-            model="groq:llama-3.3-70b-versatile",
-            api_key=os.getenv("llm_api")
-        )
-
-        # LLM writes the email
+        llm = init_chat_model(model="groq:llama-3.3-70b-versatile", api_key=os.getenv("llm_api"))
         email_content = llm.invoke(f"""
 Write a professional appointment confirmation email for BrightSmile Dental Hospital.
-
-Booking details:
-{booking_details}
-
-Write a warm, professional email. Include all booking details clearly.
-No subject line, just the email body. No <think> tags.
+Booking details: {booking_details}
+Write a warm, professional email body only. No subject line. No <think> tags.
 """).content
-
-        # Strip <think> tags if any
-        import re
         email_content = re.sub(r"<think>.*?</think>", "", email_content, flags=re.DOTALL).strip()
 
-        # Send it
         sender = os.getenv("EMAIL_SENDER")
         password = os.getenv("EMAIL_PASSWORD")
-
         msg = MIMEMultipart()
         msg["Subject"] = "✅ Appointment Confirmed — BrightSmile Dental Hospital"
         msg["From"] = f"BrightSmile Dental <{sender}>"
@@ -192,21 +132,18 @@ No subject line, just the email body. No <think> tags.
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender, password)
             server.sendmail(sender, patient_email, msg.as_string())
-
-        print(f"✅ Email sent to {patient_email}", file=sys.stderr)
         return True
-
     except Exception as e:
         print(f"⚠️ Email failed: {e}", file=sys.stderr)
-        return False    
+        return False
 
 
-# ── Tool Logic ────────────────────────────────────────────────────────────────
-
+# ── Tool Logic ────────────────────────────────────────────────
 def handle_book(args: dict) -> str:
+    service, err = get_calendar_service()
+    if err:
+        return err
     try:
-        service = get_calendar_service()
-
         name = args["patient_name"]
         date = args["date"]
         time = args["time"]
@@ -220,21 +157,12 @@ def handle_book(args: dict) -> str:
         event = {
             "summary": f"🦷 {treatment} — {name}",
             "description": f"Patient: {name}\nTreatment: {treatment}\nBooked via BrightSmile Support Agent",
-            "start": {
-                "dateTime": start_dt.strftime("%Y-%m-%dT%H:%M:%S"),
-                "timeZone": TIMEZONE,
-            },
-            "end": {
-                "dateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
-                "timeZone": TIMEZONE,
-            },
-            "reminders": {
-                "useDefault": False,
-                "overrides": [
-                    {"method": "email", "minutes": 60},
-                    {"method": "popup", "minutes": 15},
-                ],
-            },
+            "start": {"dateTime": start_dt.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": TIMEZONE},
+            "end": {"dateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": TIMEZONE},
+            "reminders": {"useDefault": False, "overrides": [
+                {"method": "email", "minutes": 60},
+                {"method": "popup", "minutes": 15},
+            ]},
         }
 
         created = service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
@@ -253,7 +181,6 @@ def handle_book(args: dict) -> str:
             f"💡 Save the Event ID to cancel later."
         )
 
-        # ── LLM writes and sends email automatically ──
         if patient_email:
             sent = send_booking_email(patient_email, result_text)
             result_text += f"\n📧 Confirmation email {'sent to ' + patient_email if sent else 'could not be sent.'}"
@@ -262,32 +189,28 @@ def handle_book(args: dict) -> str:
 
     except ValueError:
         return "❌ Wrong format. Date must be YYYY-MM-DD and time must be HH:MM (24hr)"
-    except FileNotFoundError as e:
-        return f"❌ Auth Error: {str(e)}"
     except Exception as e:
         return f"❌ Booking failed: {str(e)}"
-    
-    
 
 
 def handle_cancel(args: dict) -> str:
+    service, err = get_calendar_service()
+    if err:
+        return err
     try:
-        service = get_calendar_service()
         event_id = args["event_id"]
         service.events().delete(calendarId=CALENDAR_ID, eventId=event_id).execute()
-        return (
-            f"✅ Appointment Cancelled.\n"
-            f"Event ID: {event_id} has been removed from the calendar."
-        )
+        return f"✅ Appointment Cancelled.\nEvent ID: {event_id} has been removed."
     except Exception as e:
         return f"❌ Cancellation failed: {str(e)}"
 
 
 def handle_availability(args: dict) -> str:
+    service, err = get_calendar_service()
+    if err:
+        return err
     try:
-        service = get_calendar_service()
         date = args["date"]
-
         result = service.events().list(
             calendarId=CALENDAR_ID,
             timeMin=f"{date}T00:00:00+05:30",
@@ -297,7 +220,6 @@ def handle_availability(args: dict) -> str:
         ).execute()
 
         events = result.get("items", [])
-
         if not events:
             return f"📅 {date} is fully open — no appointments booked yet."
 
@@ -306,25 +228,17 @@ def handle_availability(args: dict) -> str:
             start = ev["start"].get("dateTime", ev["start"].get("date"))
             t = datetime.fromisoformat(start).strftime("%H:%M")
             lines.append(f"  🔴 {t} — {ev.get('summary', 'Appointment')}  (ID: {ev.get('id','')})")
-
         lines.append("\n✅ All other time slots are available.")
         return "\n".join(lines)
-
     except Exception as e:
         return f"❌ Failed to check availability: {str(e)}"
 
 
-# ── Entry Point ───────────────────────────────────────────────────────────────
-
+# ── Entry Point ───────────────────────────────────────────────
 async def main():
     print("🦷 BrightSmile Calendar MCP Server running...", file=sys.stderr)
     async with stdio_server() as (read_stream, write_stream):
-        await app.run(
-            read_stream,
-            write_stream,
-            app.create_initialization_options()
-        )
-
+        await app.run(read_stream, write_stream, app.create_initialization_options())
 
 if __name__ == "__main__":
     asyncio.run(main())
