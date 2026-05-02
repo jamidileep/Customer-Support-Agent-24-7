@@ -96,7 +96,10 @@ def load_agent():
 
     def book_fn(**kwargs):
         """Book a dental appointment in Google Calendar."""
-        return handle_book(kwargs)
+        try:
+            return handle_book(kwargs)
+        except Exception as e:
+            return f"❌ BOOKING ERROR: {str(e)}"
 
     def cancel_fn(event_id: str):
         """Cancel an appointment using event ID."""
