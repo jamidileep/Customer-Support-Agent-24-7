@@ -22,24 +22,34 @@ st.title("🦷 BrightSmile Dental Support")
 st.caption("Book appointments · Get info · 24/7 support")
 st.divider()
 
+# ---------------- SPEECH TO TEXT ----------------
+def speech_to_text(audio_bytes) -> str:
+    try:
+        from groq import Groq
+        client = Groq(api_key=os.getenv("llm_api"))
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(audio_bytes)
+            tmp_path = f.name
+        with open(tmp_path, "rb") as f:
+            transcription = client.audio.translations.create(model="whisper-large-v3", file=f)
+        os.unlink(tmp_path)
+        return transcription.text.strip()
+    except Exception as e:
+        return f"❌ Transcription error: {str(e)}"
+
 # ---------------- TEXT TO SPEECH ----------------
 def text_to_speech(text: str) -> str:
     try:
         clean = re.sub(r"[#*_`]", "", text)
         clean = clean[:500]
-
         tts = gTTS(text=clean, lang="en")
-
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             tts.save(f.name)
             tmp = f.name
-
         with open(tmp, "rb") as f:
             audio = base64.b64encode(f.read()).decode()
-
         os.unlink(tmp)
         return audio
-
     except:
         return ""
 
@@ -164,30 +174,58 @@ if "history" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "last_audio_id" not in st.session_state:
+    st.session_state.last_audio_id = None
+
+if "mic_key" not in st.session_state:
+    st.session_state.mic_key = 0
+
 # ---------------- CHAT UI ----------------
 for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_input = st.chat_input("Ask me anything...")
+# ---------------- INPUT ROW ----------------
+col_mic, col_input = st.columns([1, 10])
 
-# ---------------- MAIN ----------------
-if user_input:
-    st.session_state.history.append({"role": "user", "content": user_input})
+with col_mic:
+    audio = st.audio_input(" ", label_visibility="collapsed", key=f"mic_{st.session_state.mic_key}")
+
+with col_input:
+    user_input = st.chat_input("Ask me anything...")
+
+# ---------------- HANDLE MIC ----------------
+# If user recorded audio and it's a new recording → transcribe → treat as user_input
+if audio:
+    audio_id = hash(audio.read())
+    audio.seek(0)
+    if audio_id != st.session_state.last_audio_id:
+        st.session_state.last_audio_id = audio_id
+        with st.spinner("Transcribing..."):
+            transcribed = speech_to_text(audio.read())
+        st.session_state.mic_key += 1          # reset mic widget
+        if transcribed and not transcribed.startswith("❌"):
+            user_input = transcribed            # hand off to main flow below
+        else:
+            st.warning(transcribed)
+
+# ---------------- MAIN FLOW ----------------
+def run_agent(query: str, auto_speak: bool = False):
+    """Run the agent for a given query and optionally auto-play TTS."""
+    st.session_state.history.append({"role": "user", "content": query})
+
+    with st.chat_message("user"):
+        st.markdown(query)
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
                 graph = load_agent()
-
-                st.session_state.messages.append(HumanMessage(content=user_input))
+                st.session_state.messages.append(HumanMessage(content=query))
                 result = graph.invoke({"messages": st.session_state.messages})
-
                 response = result["messages"][-1].content
                 response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
-
                 st.session_state.messages = list(result["messages"])
-
             except Exception as e:
                 response = f"⚠️ Error: {str(e)}"
 
@@ -195,12 +233,17 @@ if user_input:
 
     st.session_state.history.append({"role": "assistant", "content": response})
 
-    # ---- Audio ----
-    audio = text_to_speech(response)
-    if audio:
+    # Auto-play TTS when triggered by mic; also play for typed input
+    audio_b64 = text_to_speech(response)
+    if audio_b64:
         st.markdown(
-            f'<audio autoplay><source src="data:audio/mp3;base64,{audio}" type="audio/mp3"></audio>',
+            f'<audio autoplay><source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3"></audio>',
             unsafe_allow_html=True
         )
 
     st.rerun()
+
+
+if user_input:
+    # auto_speak=True for mic (audio already set), typed input also gets TTS
+    run_agent(user_input, auto_speak=True)
