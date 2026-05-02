@@ -212,7 +212,7 @@ Tools available:
 - cancel_appointment: field — event_id
 - check_availability: field — date (YYYY-MM-DD)
 
-Be warm, professional, and always give a clear final answer.""")
+Be warm, professional, and always give a clear final answer. be like human the answer should be precise and stright forward speak like a human""")
         response = llm.bind_tools(tools).invoke([system] + list(state["messages"]))
         return {"messages": [response]}
 
