@@ -185,17 +185,22 @@ for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ---------------- INPUT ROW ----------------
-col_mic, col_input = st.columns([1, 10])
+# ---------------- STANDARD PINNED CHAT INPUT ----------------
+user_input = st.chat_input("Ask me anything...")
 
-with col_mic:
+# ---------------- MIC TOGGLE BUTTON (above chat input) ----------------
+if "show_mic" not in st.session_state:
+    st.session_state.show_mic = False
+
+if st.button("🎙️", help="Record voice message", key="mic_toggle"):
+    st.session_state.show_mic = not st.session_state.show_mic
+
+# Hide the audio_input widget visually when not toggled; always render to avoid key errors
+audio = None
+if st.session_state.show_mic:
     audio = st.audio_input(" ", label_visibility="collapsed", key=f"mic_{st.session_state.mic_key}")
 
-with col_input:
-    user_input = st.chat_input("Ask me anything...")
-
 # ---------------- HANDLE MIC ----------------
-# If user recorded audio and it's a new recording → transcribe → treat as user_input
 if audio:
     audio_id = hash(audio.read())
     audio.seek(0)
@@ -203,9 +208,10 @@ if audio:
         st.session_state.last_audio_id = audio_id
         with st.spinner("Transcribing..."):
             transcribed = speech_to_text(audio.read())
-        st.session_state.mic_key += 1          # reset mic widget
+        st.session_state.mic_key += 1
+        st.session_state.show_mic = False       # hide mic after recording
         if transcribed and not transcribed.startswith("❌"):
-            user_input = transcribed            # hand off to main flow below
+            user_input = transcribed
         else:
             st.warning(transcribed)
 
